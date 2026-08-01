@@ -1,0 +1,33 @@
+{
+  "name": "club-management-server",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "dev": "tsx watch index.ts",
+    "start": "tsx index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start:prod": "node dist/index.js",
+    "nodemon": "nodemon --exec tsx index.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^2.12.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^4.22.2",
+    "mongodb": "^7.5.0",
+    "mongoose": "^9.7.4"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.14.0",
+    "nodemon": "^3.1.14",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2"
+  },
+  "engines": {
+    "node": ">=18.18"
+  }
+}
