@@ -7,14 +7,8 @@
 node_modules/
 
 # Logs
-logs/
 *.log
-npm-debug.log*
-yarn-debug.log*
-pnpm-debug.log*
-smoke.out.log*
-smoke.err.log*
-server.err.log*
+logs/
 
 # Build output
 dist/
@@ -27,14 +21,9 @@ build/
 .DS_Store
 Thumbs.db
 
-# IDE / Editor
+# Editor
 .vscode/
 .idea/
 
-# Temporary files
-tmp/
-temp/
-
 # Coverage
 coverage/
-.nyc_output/
