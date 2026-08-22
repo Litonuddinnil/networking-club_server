@@ -124,7 +124,40 @@ apiRouter.get("/members", async (req: Request, res: Response) => {
 apiRouter.post("/members", async (req: Request, res: Response) => {
   try {
     const db = getDb();
-    const newMember = req.body;
+    const newMember = req.body || {};
+
+    // Guard against duplicate registration: same email or same Firebase
+    // uid should never create two member documents.
+    const orConditions: any[] = [];
+    if (newMember.email) {
+      orConditions.push({
+        email: String(newMember.email).toLowerCase(),
+      });
+    }
+    if (newMember.uid) {
+      orConditions.push({ uid: newMember.uid });
+    }
+    if (newMember.memberId) {
+      orConditions.push({ memberId: newMember.memberId });
+    }
+
+    if (orConditions.length) {
+      const existing = await db
+        .collection("members")
+        .findOne({ $or: orConditions });
+      if (existing) {
+        return res.status(409).json({
+          error: "A member with this email, uid, or memberId already exists.",
+          existingId: existing._id,
+        });
+      }
+    }
+
+    // Normalize email to lowercase so future lookups stay consistent.
+    if (newMember.email) {
+      newMember.email = String(newMember.email).toLowerCase();
+    }
+
     const result = await db.collection("members").insertOne(newMember);
     res.status(201).json({ ...newMember, _id: result.insertedId });
   } catch (error: any) {
@@ -498,7 +531,207 @@ apiRouter.delete("/sponsors/:name", async (req: Request, res: Response) => {
   }
 });
 
-// 10. Analytics
+// 10. Payments — admin sees all, member dashboard filters by memberId/email
+apiRouter.get("/payments", async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const payments = await db
+      .collection("payments")
+      .find()
+      .sort({ _id: -1 })
+      .toArray();
+    res.json(payments);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.post("/payments", async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const incoming = req.body || {};
+    // Normalize email to lowercase for consistent lookups.
+    if (incoming.memberEmail) {
+      incoming.memberEmail = String(incoming.memberEmail).toLowerCase();
+    }
+    const payload = {
+      ...incoming,
+      status: incoming.status || "pending",
+      amount: Number(incoming.amount) || 0,
+      createdAt: incoming.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const result = await db.collection("payments").insertOne(payload);
+    res.status(201).json({ ...payload, _id: result.insertedId });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.patch("/payments/:id", async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const query = buildIdQuery(req.params.id);
+    const update = {
+      ...req.body,
+      updatedAt: new Date().toISOString(),
+    };
+    await db.collection("payments").updateOne(query, { $set: update });
+    const updated = await db.collection("payments").findOne(query);
+    if (updated) return res.json(updated);
+    res.status(404).json({ error: "Payment not found." });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.delete("/payments/:id", async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const query = buildIdQuery(req.params.id);
+    await db.collection("payments").deleteOne(query);
+    res.json({ success: true, message: "Payment deleted successfully." });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 11. Attendance — admin sees all, member dashboard filters by memberId/email
+apiRouter.get("/attendance", async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const attendance = await db
+      .collection("attendance")
+      .find()
+      .sort({ _id: -1 })
+      .toArray();
+    res.json(attendance);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.post("/attendance", async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const incoming = req.body || {};
+    if (incoming.memberEmail) {
+      incoming.memberEmail = String(incoming.memberEmail).toLowerCase();
+    }
+    const payload = {
+      ...incoming,
+      status: incoming.status || "Present",
+      createdAt: incoming.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const result = await db.collection("attendance").insertOne(payload);
+    res.status(201).json({ ...payload, _id: result.insertedId });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.patch("/attendance/:id", async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const query = buildIdQuery(req.params.id);
+    const update = {
+      ...req.body,
+      updatedAt: new Date().toISOString(),
+    };
+    await db.collection("attendance").updateOne(query, { $set: update });
+    const updated = await db.collection("attendance").findOne(query);
+    if (updated) return res.json(updated);
+    res.status(404).json({ error: "Attendance record not found." });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.delete("/attendance/:id", async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const query = buildIdQuery(req.params.id);
+    await db.collection("attendance").deleteOne(query);
+    res.json({ success: true, message: "Attendance record deleted." });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 12. Event Registrations — admin sees all, member dashboard filters by memberId/email
+apiRouter.get("/event-registrations", async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const list = await db
+      .collection("event_registrations")
+      .find()
+      .sort({ _id: -1 })
+      .toArray();
+    res.json(list);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.post("/event-registrations", async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const incoming = req.body || {};
+    if (incoming.memberEmail) {
+      incoming.memberEmail = String(incoming.memberEmail).toLowerCase();
+    }
+    // Prevent duplicate registration for the same member + event.
+    const existing = await db.collection("event_registrations").findOne({
+      eventId: incoming.eventId,
+      memberId: incoming.memberId,
+    });
+    if (existing) {
+      return res.status(409).json({
+        error: "You are already registered for this event.",
+        existingId: existing._id,
+      });
+    }
+    const payload = {
+      ...incoming,
+      status: incoming.status || "registered",
+      registeredAt: incoming.registeredAt || new Date().toISOString(),
+    };
+    const result = await db
+      .collection("event_registrations")
+      .insertOne(payload);
+    res.status(201).json({ ...payload, _id: result.insertedId });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.patch("/event-registrations/:id", async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const query = buildIdQuery(req.params.id);
+    const update = { ...req.body };
+    await db.collection("event_registrations").updateOne(query, { $set: update });
+    const updated = await db.collection("event_registrations").findOne(query);
+    if (updated) return res.json(updated);
+    res.status(404).json({ error: "Registration not found." });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.delete("/event-registrations/:id", async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const query = buildIdQuery(req.params.id);
+    await db.collection("event_registrations").deleteOne(query);
+    res.json({ success: true, message: "Registration cancelled." });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 13. Analytics
 apiRouter.get("/analytics", async (req: Request, res: Response) => {
   try {
     const db = getDb();
