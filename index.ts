@@ -203,6 +203,22 @@ apiRouter.patch("/members/:id", async (req: Request, res: Response) => {
 });
 
 // 2. Posts
+const normalizePostPayload = (incoming: any) => {
+  if (!incoming || typeof incoming !== "object") return null;
+  const out: Record<string, any> = { ...incoming };
+  // Mirror image -> coverImage so the frontend reads one stable name
+  if (out.image && !out.coverImage) out.coverImage = out.image;
+  if (out.imageUrl && !out.coverImage) out.coverImage = out.imageUrl;
+  if (out.coverImage) out.coverImage = String(out.coverImage).trim();
+  if (typeof out.title === "string") out.title = out.title.trim();
+  if (typeof out.category === "string") out.category = out.category.trim() || "General";
+  if (typeof out.content === "string") out.content = out.content;
+  if (!out.excerpt && typeof out.content === "string") {
+    out.excerpt = out.content.replace(/\s+/g, " ").slice(0, 180);
+  }
+  return out;
+};
+
 apiRouter.get("/posts", async (req: Request, res: Response) => {
   try {
     const db = getDb();
@@ -213,12 +229,34 @@ apiRouter.get("/posts", async (req: Request, res: Response) => {
   }
 });
 
+apiRouter.get("/posts/:id", async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const query = buildIdQuery(req.params.id);
+    const post = await db.collection("posts").findOne(query);
+    if (!post) return res.status(404).json({ error: "Post not found." });
+    res.json(post);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 apiRouter.post("/posts", async (req: Request, res: Response) => {
   try {
     const db = getDb();
-    const newPost = req.body;
-    const result = await db.collection("posts").insertOne(newPost);
-    res.status(201).json({ ...newPost, _id: result.insertedId });
+    const payload = normalizePostPayload(req.body) || {};
+    if (!payload.title) {
+      return res.status(400).json({ error: "Post title is required." });
+    }
+    if (!payload.content) {
+      return res.status(400).json({ error: "Post content is required." });
+    }
+    payload.createdAt = payload.createdAt || new Date().toISOString();
+    payload.updatedAt = new Date().toISOString();
+    if (!payload.date) payload.date = new Date().toISOString().slice(0, 10);
+    if (!payload.status) payload.status = "published";
+    const result = await db.collection("posts").insertOne(payload);
+    res.status(201).json({ ...payload, _id: result.insertedId });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -228,27 +266,57 @@ apiRouter.delete("/posts/:id", async (req: Request, res: Response) => {
   try {
     const db = getDb();
     const query = buildIdQuery(req.params.id);
-    await db.collection("posts").deleteOne(query);
+    const result = await db.collection("posts").deleteOne(query);
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: "Post not found." });
+    }
     res.json({ success: true, message: "Post deleted successfully." });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
 
-apiRouter.put("/posts/:id", async (req: Request, res: Response) => {
+const updatePostHandler = async (req: Request, res: Response) => {
   try {
     const db = getDb();
     const query = buildIdQuery(req.params.id);
-    await db.collection("posts").updateOne(query, { $set: req.body });
+    const payload = normalizePostPayload(req.body) || {};
+    if (payload.title !== undefined && !String(payload.title).trim()) {
+      return res.status(400).json({ error: "Post title cannot be empty." });
+    }
+    if (payload.content !== undefined && !String(payload.content).trim()) {
+      return res.status(400).json({ error: "Post content cannot be empty." });
+    }
+    delete payload._id;
+    payload.updatedAt = new Date().toISOString();
+    const result = await db
+      .collection("posts")
+      .updateOne(query, { $set: payload });
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: "Post not found." });
+    }
     const updated = await db.collection("posts").findOne(query);
-    if (updated) return res.json(updated);
-    res.status(404).json({ error: "Post not found." });
+    res.json(updated);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
-});
+};
+apiRouter.put("/posts/:id", updatePostHandler);
+apiRouter.patch("/posts/:id", updatePostHandler);
 
 // 3. Announcements
+const normalizeAnnouncementPayload = (incoming: any) => {
+  if (!incoming || typeof incoming !== "object") return null;
+  const out: Record<string, any> = { ...incoming };
+  if (out.image && !out.coverImage) out.coverImage = out.image;
+  if (out.imageUrl && !out.coverImage) out.coverImage = out.imageUrl;
+  if (out.coverImage) out.coverImage = String(out.coverImage).trim();
+  if (typeof out.title === "string") out.title = out.title.trim();
+  if (typeof out.category === "string") out.category = out.category.trim() || "Notice";
+  if (typeof out.content === "string") out.content = out.content;
+  return out;
+};
+
 apiRouter.get("/announcements", async (req: Request, res: Response) => {
   try {
     const db = getDb();
@@ -259,12 +327,34 @@ apiRouter.get("/announcements", async (req: Request, res: Response) => {
   }
 });
 
+apiRouter.get("/announcements/:id", async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const query = buildIdQuery(req.params.id);
+    const ann = await db.collection("announcements").findOne(query);
+    if (!ann) return res.status(404).json({ error: "Announcement not found." });
+    res.json(ann);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 apiRouter.post("/announcements", async (req: Request, res: Response) => {
   try {
     const db = getDb();
-    const newAnn = req.body;
-    const result = await db.collection("announcements").insertOne(newAnn);
-    res.status(201).json({ ...newAnn, _id: result.insertedId });
+    const payload = normalizeAnnouncementPayload(req.body) || {};
+    if (!payload.title) {
+      return res.status(400).json({ error: "Announcement title is required." });
+    }
+    if (!payload.content) {
+      return res.status(400).json({ error: "Announcement content is required." });
+    }
+    payload.createdAt = payload.createdAt || new Date().toISOString();
+    payload.updatedAt = new Date().toISOString();
+    if (!payload.date) payload.date = new Date().toISOString().slice(0, 10);
+    if (!payload.status) payload.status = "published";
+    const result = await db.collection("announcements").insertOne(payload);
+    res.status(201).json({ ...payload, _id: result.insertedId });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -274,27 +364,57 @@ apiRouter.delete("/announcements/:id", async (req: Request, res: Response) => {
   try {
     const db = getDb();
     const query = buildIdQuery(req.params.id);
-    await db.collection("announcements").deleteOne(query);
+    const result = await db.collection("announcements").deleteOne(query);
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: "Announcement not found." });
+    }
     res.json({ success: true, message: "Announcement deleted successfully." });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
 
-apiRouter.put("/announcements/:id", async (req: Request, res: Response) => {
+const updateAnnouncementHandler = async (req: Request, res: Response) => {
   try {
     const db = getDb();
     const query = buildIdQuery(req.params.id);
-    await db.collection("announcements").updateOne(query, { $set: req.body });
+    const payload = normalizeAnnouncementPayload(req.body) || {};
+    if (payload.title !== undefined && !String(payload.title).trim()) {
+      return res.status(400).json({ error: "Announcement title cannot be empty." });
+    }
+    if (payload.content !== undefined && !String(payload.content).trim()) {
+      return res.status(400).json({ error: "Announcement content cannot be empty." });
+    }
+    delete payload._id;
+    payload.updatedAt = new Date().toISOString();
+    const result = await db
+      .collection("announcements")
+      .updateOne(query, { $set: payload });
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: "Announcement not found." });
+    }
     const updated = await db.collection("announcements").findOne(query);
-    if (updated) return res.json(updated);
-    res.status(404).json({ error: "Announcement not found." });
+    res.json(updated);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
-});
+};
+apiRouter.put("/announcements/:id", updateAnnouncementHandler);
+apiRouter.patch("/announcements/:id", updateAnnouncementHandler);
 
 // 4. Gallery
+const normalizeGalleryPayload = (incoming: any) => {
+  if (!incoming || typeof incoming !== "object") return null;
+  const out: Record<string, any> = { ...incoming };
+  // The form sends imageUrl; mirror legacy fields so cards can read either.
+  if (out.image && !out.imageUrl) out.imageUrl = out.image;
+  if (out.coverImage && !out.imageUrl) out.imageUrl = out.coverImage;
+  if (typeof out.imageUrl === "string") out.imageUrl = out.imageUrl.trim();
+  if (typeof out.title === "string") out.title = out.title.trim();
+  if (typeof out.category === "string") out.category = out.category.trim() || "Workshop";
+  return out;
+};
+
 apiRouter.get("/gallery", async (req: Request, res: Response) => {
   try {
     const db = getDb();
@@ -305,12 +425,33 @@ apiRouter.get("/gallery", async (req: Request, res: Response) => {
   }
 });
 
+apiRouter.get("/gallery/:id", async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const query = buildIdQuery(req.params.id);
+    const item = await db.collection("gallery").findOne(query);
+    if (!item) return res.status(404).json({ error: "Gallery item not found." });
+    res.json(item);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 apiRouter.post("/gallery", async (req: Request, res: Response) => {
   try {
     const db = getDb();
-    const newItem = req.body;
-    const result = await db.collection("gallery").insertOne(newItem);
-    res.status(201).json({ ...newItem, _id: result.insertedId });
+    const payload = normalizeGalleryPayload(req.body) || {};
+    if (!payload.title) {
+      return res.status(400).json({ error: "Gallery title is required." });
+    }
+    if (!payload.imageUrl) {
+      return res.status(400).json({ error: "Gallery image URL is required." });
+    }
+    payload.createdAt = payload.createdAt || new Date().toISOString();
+    payload.updatedAt = new Date().toISOString();
+    if (!payload.date) payload.date = new Date().toISOString().slice(0, 10);
+    const result = await db.collection("gallery").insertOne(payload);
+    res.status(201).json({ ...payload, _id: result.insertedId });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -320,12 +461,43 @@ apiRouter.delete("/gallery/:id", async (req: Request, res: Response) => {
   try {
     const db = getDb();
     const query = buildIdQuery(req.params.id);
-    await db.collection("gallery").deleteOne(query);
+    const result = await db.collection("gallery").deleteOne(query);
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: "Gallery item not found." });
+    }
     res.json({ success: true, message: "Gallery item deleted successfully." });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
+
+const updateGalleryHandler = async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const query = buildIdQuery(req.params.id);
+    const payload = normalizeGalleryPayload(req.body) || {};
+    if (payload.title !== undefined && !String(payload.title).trim()) {
+      return res.status(400).json({ error: "Gallery title cannot be empty." });
+    }
+    if (payload.imageUrl !== undefined && !String(payload.imageUrl).trim()) {
+      return res.status(400).json({ error: "Gallery image URL cannot be empty." });
+    }
+    delete payload._id;
+    payload.updatedAt = new Date().toISOString();
+    const result = await db
+      .collection("gallery")
+      .updateOne(query, { $set: payload });
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: "Gallery item not found." });
+    }
+    const updated = await db.collection("gallery").findOne(query);
+    res.json(updated);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+apiRouter.put("/gallery/:id", updateGalleryHandler);
+apiRouter.patch("/gallery/:id", updateGalleryHandler);
 
 // 5. Notices (Backward Compatibility)
 apiRouter.get("/notices", async (req: Request, res: Response) => {
@@ -361,6 +533,35 @@ apiRouter.delete("/notices/:id", async (req: Request, res: Response) => {
 });
 
 // 6. Events
+const normalizeEventPayload = (incoming: any) => {
+  if (!incoming || typeof incoming !== "object") return null;
+  const out: Record<string, any> = { ...incoming };
+  if (out.image && !out.imageUrl) out.imageUrl = out.image;
+  if (out.coverImage && !out.imageUrl) out.imageUrl = out.coverImage;
+  if (typeof out.imageUrl === "string") out.imageUrl = out.imageUrl.trim();
+  if (typeof out.title === "string") out.title = out.title.trim();
+  if (typeof out.type === "string") out.type = out.type.trim() || "Workshop";
+  if (typeof out.location === "string") out.location = out.location.trim();
+  // If both date and time are present, combine into eventDate so cards can parse.
+  if (out.date && out.time && !out.eventDate) {
+    try {
+      const combined = new Date(`${out.date} ${out.time}`);
+      if (!isNaN(combined.getTime())) out.eventDate = combined.toISOString();
+    } catch {
+      /* ignore */
+    }
+  } else if (out.eventDateTime && !out.eventDate) {
+    try {
+      const combined = new Date(out.eventDateTime);
+      if (!isNaN(combined.getTime())) out.eventDate = combined.toISOString();
+    } catch {
+      /* ignore */
+    }
+  }
+  if (typeof out.eventDate === "string") out.eventDate = out.eventDate.trim();
+  return out;
+};
+
 apiRouter.get("/events", async (req: Request, res: Response) => {
   try {
     const db = getDb();
@@ -371,12 +572,33 @@ apiRouter.get("/events", async (req: Request, res: Response) => {
   }
 });
 
+apiRouter.get("/events/:id", async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const query = buildIdQuery(req.params.id);
+    const event = await db.collection("events").findOne(query);
+    if (!event) return res.status(404).json({ error: "Event not found." });
+    res.json(event);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 apiRouter.post("/events", async (req: Request, res: Response) => {
   try {
     const db = getDb();
-    const newEvent = req.body;
-    const result = await db.collection("events").insertOne(newEvent);
-    res.status(201).json({ ...newEvent, _id: result.insertedId });
+    const payload = normalizeEventPayload(req.body) || {};
+    if (!payload.title) {
+      return res.status(400).json({ error: "Event title is required." });
+    }
+    if (!payload.date) {
+      return res.status(400).json({ error: "Event date is required." });
+    }
+    payload.createdAt = payload.createdAt || new Date().toISOString();
+    payload.updatedAt = new Date().toISOString();
+    if (!payload.status) payload.status = "upcoming";
+    const result = await db.collection("events").insertOne(payload);
+    res.status(201).json({ ...payload, _id: result.insertedId });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -386,25 +608,40 @@ apiRouter.delete("/events/:id", async (req: Request, res: Response) => {
   try {
     const db = getDb();
     const query = buildIdQuery(req.params.id);
-    await db.collection("events").deleteOne(query);
+    const result = await db.collection("events").deleteOne(query);
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: "Event not found." });
+    }
     res.json({ success: true, message: "Event deleted successfully." });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
 
-apiRouter.put("/events/:id", async (req: Request, res: Response) => {
+const updateEventHandler = async (req: Request, res: Response) => {
   try {
     const db = getDb();
     const query = buildIdQuery(req.params.id);
-    await db.collection("events").updateOne(query, { $set: req.body });
+    const payload = normalizeEventPayload(req.body) || {};
+    if (payload.title !== undefined && !String(payload.title).trim()) {
+      return res.status(400).json({ error: "Event title cannot be empty." });
+    }
+    delete payload._id;
+    payload.updatedAt = new Date().toISOString();
+    const result = await db
+      .collection("events")
+      .updateOne(query, { $set: payload });
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: "Event not found." });
+    }
     const updated = await db.collection("events").findOne(query);
-    if (updated) return res.json(updated);
-    res.status(404).json({ error: "Event not found." });
+    res.json(updated);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
-});
+};
+apiRouter.put("/events/:id", updateEventHandler);
+apiRouter.patch("/events/:id", updateEventHandler);
 
 // 7. Courses
 apiRouter.get("/courses", async (req: Request, res: Response) => {
