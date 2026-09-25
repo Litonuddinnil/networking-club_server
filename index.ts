@@ -549,6 +549,31 @@ const clockTimeOf = (value: unknown): string | null => {
   return match ? match[1] : null;
 };
 
+/**
+ * When registration closes for an event.
+ *
+ * With a known clock time the deadline is the start itself; with only a
+ * calendar day it is the end of that day, so an all-day event does not stop
+ * accepting sign-ups at midnight of its own morning.
+ */
+const registrationDeadline = (ev: any): Date | null => {
+  const raw =
+    (typeof ev?.eventDate === "string" && ev.eventDate) ||
+    (typeof ev?.date === "string" && ev.date) ||
+    (typeof ev?.startDate === "string" && ev.startDate) ||
+    "";
+  const day = calendarDayOf(raw);
+  if (!day) return null;
+
+  const clock = clockTimeOf(raw) || clockTimeOf(`T${ev?.time || ""}`);
+  const [y, m, d] = day.split("-").map(Number);
+  if (clock) {
+    const [hh, mm] = clock.split(":").map(Number);
+    return new Date(y, m - 1, d, hh, mm);
+  }
+  return new Date(y, m - 1, d, 23, 59, 59, 999);
+};
+
 const normalizeEventPayload = (incoming: any) => {
   if (!incoming || typeof incoming !== "object") return null;
   const out: Record<string, any> = { ...incoming };
@@ -1017,6 +1042,26 @@ apiRouter.post("/event-registrations", async (req: Request, res: Response) => {
     }
     if (!incoming.studentId) {
       return res.status(400).json({ error: "Student ID is required." });
+    }
+
+    // The client disables the button once the date passes, but the endpoint is
+    // reachable directly, so the deadline is enforced here too. Dates are
+    // compared as plain strings/parts to avoid a server in another timezone
+    // shifting the calendar day.
+    const eventDoc = await db
+      .collection("events")
+      .findOne(buildIdQuery(String(incoming.eventId)));
+
+    if (eventDoc) {
+      if (String(eventDoc.status || "").toLowerCase() === "cancelled") {
+        return res.status(409).json({ error: "This event has been cancelled." });
+      }
+      const closesAt = registrationDeadline(eventDoc);
+      if (closesAt && Date.now() > closesAt.getTime()) {
+        return res
+          .status(409)
+          .json({ error: "Registration for this event has closed." });
+      }
     }
 
     // A member may re-apply after being rejected or cancelling, but not while
