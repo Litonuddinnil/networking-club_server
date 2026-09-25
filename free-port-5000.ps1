@@ -1,48 +1,48 @@
-# Free port 5000 and start the server cleanly.
-# Run from PowerShell: .\free-port-5000.ps1
+# Free port 5000 (Windows, manual use).
+#
+# The npm scripts no longer call this file — `predev` runs
+# `node scripts/free-port.mjs`, which does the same job on every OS.
+# It is kept only as a hand-run convenience.
+#
+# Two behaviours were removed because they caused real damage:
+#
+#   * It killed EVERY `node` / `tsx` / `nodemon` process on the machine, not
+#     just the one holding :5000 — taking out the client dev server and any
+#     unrelated Node project with it.
+#   * It finished by running `nodemon index.ts`, so a script whose job was to
+#     free the port immediately re-bound it. Running it before `npm run dev`
+#     was itself the cause of "Port 5000 is already in use".
+#
+# Run from PowerShell:  .\free-port-5000.ps1
 
-Write-Host "=== Killing any process holding port 5000 ===" -ForegroundColor Cyan
+$Port = 5000
 
-$listeners = netstat -ano | Select-String ":5000.*LISTENING"
-if ($listeners) {
-    foreach ($line in $listeners) {
-        # Last whitespace-separated token is the PID
-        $parts = ($line -replace "\s+", " ").Trim().Split(" ")
-        $pid = $parts[-1]
-        Write-Host "Killing PID $pid (was bound to :5000)..." -ForegroundColor Yellow
-        try {
-            Stop-Process -Id $pid -Force -ErrorAction Stop
-        } catch {
-            Write-Host "  -> could not kill PID $pid : $_" -ForegroundColor Red
-        }
-    }
-    Start-Sleep -Seconds 2
-} else {
-    Write-Host "Nothing is listening on port 5000." -ForegroundColor Green
+Write-Host "=== Freeing port $Port ===" -ForegroundColor Cyan
+
+$owners = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+    Select-Object -ExpandProperty OwningProcess -Unique
+
+if (-not $owners) {
+    Write-Host "Nothing is listening on port $Port." -ForegroundColor Green
+    exit 0
 }
 
-# Belt-and-braces: kill any orphaned tsx/nodemon/node still around
-foreach ($name in @("tsx", "nodemon", "node")) {
-    Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
-        Write-Host "Killing leftover $name (PID $($_.Id))..." -ForegroundColor Yellow
-        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+foreach ($procId in $owners) {
+    $name = (Get-Process -Id $procId -ErrorAction SilentlyContinue).ProcessName
+    Write-Host "Killing PID $procId ($name) bound to :$Port..." -ForegroundColor Yellow
+    try {
+        Stop-Process -Id $procId -Force -ErrorAction Stop
+    } catch {
+        Write-Host "  -> could not kill PID $procId : $_" -ForegroundColor Red
     }
 }
+
 Start-Sleep -Seconds 1
 
-Write-Host ""
-Write-Host "=== Confirming port 5000 is free ===" -ForegroundColor Cyan
-$stillBound = netstat -ano | Select-String ":5000.*LISTENING"
+$stillBound = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
 if ($stillBound) {
-    Write-Host "Port 5000 is STILL bound:" -ForegroundColor Red
-    $stillBound | ForEach-Object { Write-Host "  $_" }
-    Write-Host "Try restarting PowerShell as Administrator, then re-run this script." -ForegroundColor Red
+    Write-Host "Port $Port is STILL bound. Try running PowerShell as Administrator." -ForegroundColor Red
     exit 1
-} else {
-    Write-Host "Port 5000 is free." -ForegroundColor Green
 }
 
-Write-Host ""
-Write-Host "=== Starting nodemon ===" -ForegroundColor Cyan
-Set-Location $PSScriptRoot
-nodemon index.ts
+Write-Host "Port $Port is free. Start the server with: npm run dev" -ForegroundColor Green

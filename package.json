@@ -4,9 +4,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "predev": "powershell -ExecutionPolicy Bypass -File ./free-port-5000.ps1",
-    "prestart": "powershell -ExecutionPolicy Bypass -File ./free-port-5000.ps1",
-    "pretest": "powershell -ExecutionPolicy Bypass -File ./free-port-5000.ps1",
+    "predev": "node scripts/free-port.mjs",
     "dev": "tsx index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
