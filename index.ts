@@ -64,7 +64,8 @@ function getDb(): Db {
 }
 
 const config = {
-  port: process.env.PORT ? parseInt(process.env.PORT, 10) : 3000,
+  // Default to 5000 to match the Vite proxy in the client; honoured PORT env wins.
+  port: process.env.PORT ? parseInt(process.env.PORT, 10) : 5000,
   mongoUri: process.env.MONGODB_URI || process.env.MONGO_URI || "",
   deepseekApiKey: process.env.DEEPSEEK_API_KEY || "",
   geminiApiKey: process.env.GEMINI_API_KEY || "",
@@ -245,6 +246,7 @@ apiRouter.post("/posts", async (req: Request, res: Response) => {
   try {
     const db = getDb();
     const payload = normalizePostPayload(req.body) || {};
+    console.log(payload);
     if (!payload.title) {
       return res.status(400).json({ error: "Post title is required." });
     }
@@ -533,32 +535,70 @@ apiRouter.delete("/notices/:id", async (req: Request, res: Response) => {
 });
 
 // 6. Events
+/** "2026-09-25T14:30" | "2026-09-25" | ISO → "2026-09-25" */
+const calendarDayOf = (value: unknown): string | null => {
+  if (typeof value !== "string") return null;
+  const match = value.match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : null;
+};
+
+/** "2026-09-25T14:30" | "2026-09-25 14:30" → "14:30" */
+const clockTimeOf = (value: unknown): string | null => {
+  if (typeof value !== "string") return null;
+  const match = value.match(/[T ](\d{2}:\d{2})/);
+  return match ? match[1] : null;
+};
+
 const normalizeEventPayload = (incoming: any) => {
   if (!incoming || typeof incoming !== "object") return null;
   const out: Record<string, any> = { ...incoming };
+
   if (out.image && !out.imageUrl) out.imageUrl = out.image;
   if (out.coverImage && !out.imageUrl) out.imageUrl = out.coverImage;
-  if (typeof out.imageUrl === "string") out.imageUrl = out.imageUrl.trim();
-  if (typeof out.title === "string") out.title = out.title.trim();
-  if (typeof out.type === "string") out.type = out.type.trim() || "Workshop";
-  if (typeof out.location === "string") out.location = out.location.trim();
-  // If both date and time are present, combine into eventDate so cards can parse.
-  if (out.date && out.time && !out.eventDate) {
-    try {
-      const combined = new Date(`${out.date} ${out.time}`);
-      if (!isNaN(combined.getTime())) out.eventDate = combined.toISOString();
-    } catch {
-      /* ignore */
-    }
-  } else if (out.eventDateTime && !out.eventDate) {
-    try {
-      const combined = new Date(out.eventDateTime);
-      if (!isNaN(combined.getTime())) out.eventDate = combined.toISOString();
-    } catch {
-      /* ignore */
-    }
+
+  for (const key of [
+    "imageUrl",
+    "title",
+    "type",
+    "location",
+    "date",
+    "time",
+    "eventDate",
+    "eventDateTime",
+  ]) {
+    if (typeof out[key] === "string") out[key] = out[key].trim();
   }
-  if (typeof out.eventDate === "string") out.eventDate = out.eventDate.trim();
+  if (out.type === "") out.type = "Workshop";
+
+  // Clients have expressed the schedule three different ways: `date` + `time`,
+  // a single `eventDate`, or `eventDateTime`. This used to derive `eventDate`
+  // from `date`, but never the reverse — so a client that sent only
+  // `eventDate` (which the admin form does) left `date` undefined and tripped
+  // the "Event date is required" check below on every create.
+  //
+  // Fill in whatever is missing from whatever was supplied, and never
+  // overwrite a field the client set. Dates are handled as plain strings
+  // rather than through `new Date(...)` so a server running in a different
+  // timezone can't shift the calendar day by one.
+  const scheduleSource = out.eventDate || out.eventDateTime || out.date || "";
+
+  if (!out.date) {
+    const day = calendarDayOf(scheduleSource);
+    if (day) out.date = day;
+  }
+  if (!out.time) {
+    const clock = clockTimeOf(out.eventDate || out.eventDateTime || "");
+    if (clock) out.time = clock;
+  }
+  if (!out.eventDate && out.date) {
+    out.eventDate = out.time ? `${out.date}T${out.time}` : out.date;
+  }
+
+  // Never persist empty placeholders — they read as "set but blank" downstream.
+  for (const key of ["date", "time", "eventDate"]) {
+    if (out[key] === "") delete out[key];
+  }
+
   return out;
 };
 
@@ -591,7 +631,7 @@ apiRouter.post("/events", async (req: Request, res: Response) => {
     if (!payload.title) {
       return res.status(400).json({ error: "Event title is required." });
     }
-    if (!payload.date) {
+    if (!payload.date && !payload.eventDate) {
       return res.status(400).json({ error: "Event date is required." });
     }
     payload.createdAt = payload.createdAt || new Date().toISOString();
@@ -901,11 +941,41 @@ apiRouter.get("/event-registrations", async (req: Request, res: Response) => {
   try {
     const db = getDb();
     const list = await db
-      .collection("event_registrations")
+      .collection("event-registrations")
       .find()
       .sort({ _id: -1 })
       .toArray();
     res.json(list);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Registration lifecycle:
+ *   pending  → submitted by a member, waiting for an admin to check the
+ *              details and the payment proof
+ *   approved → admin confirmed it; the member's seat is booked
+ *   rejected → admin turned it down (reviewNote explains why)
+ *   cancelled / attended → post-approval bookkeeping
+ */
+const REGISTRATION_STATUSES = [
+  "pending",
+  "approved",
+  "rejected",
+  "registered",
+  "cancelled",
+  "attended",
+  "waitlist",
+];
+
+apiRouter.get("/event-registrations/:id", async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const query = buildIdQuery(req.params.id);
+    const found = await db.collection("event-registrations").findOne(query);
+    if (!found) return res.status(404).json({ error: "Registration not found." });
+    res.json(found);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -918,24 +988,71 @@ apiRouter.post("/event-registrations", async (req: Request, res: Response) => {
     if (incoming.memberEmail) {
       incoming.memberEmail = String(incoming.memberEmail).toLowerCase();
     }
-    // Prevent duplicate registration for the same member + event.
-    const existing = await db.collection("event_registrations").findOne({
-      eventId: incoming.eventId,
-      memberId: incoming.memberId,
-    });
-    if (existing) {
-      return res.status(409).json({
-        error: "You are already registered for this event.",
-        existingId: existing._id,
-      });
+
+    for (const key of [
+      "fullName",
+      "phone",
+      "studentId",
+      "department",
+      "session",
+      "paymentMethod",
+      "transactionId",
+      "notes",
+      "eventTitle",
+    ]) {
+      if (typeof incoming[key] === "string") incoming[key] = incoming[key].trim();
     }
+
+    if (!incoming.eventId) {
+      return res.status(400).json({ error: "Event is required." });
+    }
+    if (!incoming.fullName) {
+      return res.status(400).json({ error: "Full name is required." });
+    }
+    if (!incoming.memberEmail) {
+      return res.status(400).json({ error: "Email is required." });
+    }
+    if (!incoming.phone) {
+      return res.status(400).json({ error: "Phone number is required." });
+    }
+    if (!incoming.studentId) {
+      return res.status(400).json({ error: "Student ID is required." });
+    }
+
+    // A member may re-apply after being rejected or cancelling, but not while
+    // a submission is still pending or already approved.
+    const identity: any[] = [];
+    if (incoming.memberId) identity.push({ memberId: incoming.memberId });
+    if (incoming.memberEmail) identity.push({ memberEmail: incoming.memberEmail });
+    if (identity.length) {
+      const existing = await db.collection("event-registrations").findOne({
+        eventId: incoming.eventId,
+        $or: identity,
+        status: { $in: ["pending", "approved", "registered"] },
+      });
+      if (existing) {
+        return res.status(409).json({
+          error:
+            existing.status === "pending"
+              ? "You already have a registration awaiting approval for this event."
+              : "You are already registered for this event.",
+          existingId: existing._id,
+        });
+      }
+    }
+
     const payload = {
       ...incoming,
-      status: incoming.status || "registered",
+      // New submissions always start unapproved — an admin has to review the
+      // details and the payment before the seat counts.
+      status: REGISTRATION_STATUSES.includes(incoming.status)
+        ? incoming.status
+        : "pending",
       registeredAt: incoming.registeredAt || new Date().toISOString(),
+      submittedAt: new Date().toISOString(),
     };
     const result = await db
-      .collection("event_registrations")
+      .collection("event-registrations")
       .insertOne(payload);
     res.status(201).json({ ...payload, _id: result.insertedId });
   } catch (error: any) {
@@ -948,8 +1065,16 @@ apiRouter.patch("/event-registrations/:id", async (req: Request, res: Response) 
     const db = getDb();
     const query = buildIdQuery(req.params.id);
     const update = { ...req.body };
-    await db.collection("event_registrations").updateOne(query, { $set: update });
-    const updated = await db.collection("event_registrations").findOne(query);
+    if (update.status && !REGISTRATION_STATUSES.includes(update.status)) {
+      return res.status(400).json({ error: `Unknown status "${update.status}".` });
+    }
+    // Stamp the review so the admin table can show when a decision was made.
+    if (update.status === "approved" || update.status === "rejected") {
+      update.reviewedAt = new Date().toISOString();
+    }
+    update.updatedAt = new Date().toISOString();
+    await db.collection("event-registrations").updateOne(query, { $set: update });
+    const updated = await db.collection("event-registrations").findOne(query);
     if (updated) return res.json(updated);
     res.status(404).json({ error: "Registration not found." });
   } catch (error: any) {
@@ -961,7 +1086,7 @@ apiRouter.delete("/event-registrations/:id", async (req: Request, res: Response)
   try {
     const db = getDb();
     const query = buildIdQuery(req.params.id);
-    await db.collection("event_registrations").deleteOne(query);
+    await db.collection("event-registrations").deleteOne(query);
     res.json({ success: true, message: "Registration cancelled." });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -1162,6 +1287,19 @@ export async function startServer() {
 
   const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`📡 Full-Stack Server running on http://localhost:${PORT}`);
+  });
+
+  // If the port is already in use, exit cleanly so nodemon doesn't
+  // crash-loop trying to rebind it. The wrapper script frees the port
+  // before launching nodemon.
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(
+        `❌ Port ${PORT} is already in use. Run \\free-port-5000.ps1 to clear it, then retry.`
+      );
+      process.exit(1);
+    }
+    throw err;
   });
 
   const shutdown = (signal: string) => {
